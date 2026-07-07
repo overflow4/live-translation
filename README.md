@@ -1,185 +1,51 @@
-# [Translator.js](https://github.com/muaz-khan/Translator) | WebRTC Voice & Text Translator
+# 🎙️ Live Translate — Spanish ⇄ English
 
-# Demo: https://www.webrtc-experiment.com/Translator/
+A one-page website that listens to the room through your microphone, transcribes fast-paced **Spanish and English conversation** in real time, and translates all Spanish into English **live**.
 
-Translator.js is a JavaScript library built top on Google Speech-Recognition & Translation API to transcript and translate voice and text. It supports many locales and brings globalization in <a href="https://www.webrtc-experiment.com/">WebRTC</a>!
+Two panels, side by side:
 
-<a href="https://www.webrtc-experiment.com/Translator/">
-    <img src="https://cdn.webrtc-experiment.com/images/Translator.js-intro-1.png" />
-</a>
+| Left — Conversación (ES + EN) | Right — English only |
+| --- | --- |
+| Everything exactly as it was said, in whichever language it was said, with language tags and timestamps. | A clean, English-only feed: spoken English appears verbatim; Spanish appears as an instant English translation (with per-line translation latency shown in ms). |
 
-# How to use?
+While someone is mid-sentence, the in-flight (interim) transcript streams into the left panel and a live provisional translation streams into the right panel — so the English feed trails the speaker by fractions of a second, not sentences.
 
-```html
-<script src="https://cdn.webrtc-experiment.com/Translator.js"> </script>
+## Why it's fast
+
+- **Speech recognition** uses the browser's native Web Speech API (Chrome/Edge), which streams interim results with very low latency — no model download, no backend round-trip of audio.
+- **Translation** hits Google's public translate endpoint directly from the browser (typically 100–300 ms per utterance), with MyMemory as an automatic fallback. Interim text is translated on a 220 ms debounce so the English panel updates while people are still talking.
+- **Zero backend, zero build step, zero API keys.** Static HTML/CSS/JS.
+
+## Usage
+
+1. Open the site in **Chrome or Edge** (desktop or Android) over HTTPS.
+2. Pick the recognition dialect — `Español (EE. UU.)` is the default and handles bilingual Spanish/English ("Spanglish") conversations best. If the conversation is mostly English with some Spanish, try `English (US)`.
+3. Hit **▶ Start listening** and allow microphone access. That's it.
+
+The mic session auto-restarts itself whenever the browser ends it (silence, timeouts), so it keeps listening until you press Stop. The screen is kept awake while listening.
+
+> Tip for testing without talking: open DevTools and run `__feed('hola, ¿cómo estás? necesito la factura para mañana')` to push a phrase through the full pipeline.
+
+## Deploy
+
+It's a static site — deploy anywhere. On **Vercel**: *Add New Project → import this repo → Deploy*. No framework preset, no build command, no environment variables.
+
+Run locally with any static server (mic requires localhost or HTTPS):
+
+```bash
+npx serve .
+# or
+python3 -m http.server 8000
 ```
 
-# Facing issues using in your own domain?
+## Notes & limits
 
-* https://github.com/muaz-khan/Translator/issues/1#issuecomment-131100677
+- Requires a browser with the Web Speech API (Chrome, Edge, recent Safari). Firefox is not supported.
+- One recognition language is active at a time; the `es-US` model transcribes embedded English well, which is what makes the mixed-conversation mode work.
+- Audio is processed by the browser's speech service (Google's, in Chrome); text is sent to the translate endpoint. Nothing is stored anywhere.
 
-# API Reference
+## Credits
 
-```javascript
-var translator = new Translator();
-```
+Forked from [muaz-khan/Translator](https://github.com/muaz-khan/Translator), which pioneered the browser-native speech-recognition + Google-translation combination back in the WebRTC-experiments era. The code here is a full modern rewrite of that idea: new UI, live interim translation, bilingual routing, and current endpoints.
 
-# `getListOfLanguages`
-
-Get list of all supported languages:
-
-```javascript
-translator.getListOfLanguages(function(languages) {
-    languages.forEach(function(language) {
-        console.log(language.name, langauge.language);
-    });
-});
-```
-
-You can pass your API_Key as well:
-
-```javascript
-var config = {
-    api_key: 'AIzaSyCUmCjvKRb-kOYrnoL2xaXb8I-_JJeKpf0',
-};
-
-translator.getListOfLanguages(function(languages) {
-    languages.forEach(function(language) {
-        console.log(language.name, langauge.language);
-    });
-}, config);
-```
-
-# `translateLanguage`
-
-Pass English language text, and convert into Arabic or into any other supported language.
-
-This method simply converts text from one language into another.
-
-```javascript
-var config = {
-    from: 'language-of-the-text',
-    to: 'convert-into',
-    api_key: 'AIzaSyCUmCjvKRb-kOYrnoL2xaXb8I-_JJeKpf0', // use your own key
-    callback: function (translatedText) {
-        console.log('translated text', translatedText);
-        
-        // here you can use "speakTextUsingRobot"
-        // see below sections
-    }
-};
-
-translator.translateLanguage(textToConvert, config);
-```
-
-`translateLanguage` method takes two arguments:
-
-1. Text to convert
-2. Source and Target Languages; also callback method
-
-Second argument is an object.
-
-What you can do is either display translated text in chat-box; or use `speakTextUsingRobot` or `speakTextUsingGoogleSpeaker` methods to play voice.
-
-# `voiceToText`
-
-This method allows you convert voice into text; whatever you speak is recognized using Google Speech-Recognition API; and converted into text using same API:
-
-```javascript
-var convertMyVoiceIntoEnglish = 'en-US'; // select any language
-translator.voiceToText(function (text) {
-    console.log('Your voice as text!', text);
-    
-    // here you can use "translateLanguage" method
-    // translator.translateLanguage
-    // see more info in above section
-}, convertMyVoiceIntoEnglish);
-```
-
-`voiceToText` method takes two arguments:
-
-1. Callback; used to return recognized text
-2. Language; used to suggest Speech-Recognition API to easily recognize speaker's language
-
-If `language` is not passed; then `en-US` will be used as default language.
-
-You can use socket.io, websockets or any other signaling gateway like [WebRTC](https://www.webrtc-experiment.com/) data channels to exchange/share transcripted text with other users.
-
-# `speakTextUsingRobot`
-
-Use a javascript file to speak the text.
-
-This method uses meSpeak.js library to play text using a robot voice. Behind the scene; text is buffered and converted into WAV file; which is played using invisible `<audio>` element.
-
-```javascript
-var config = {
-    workerPath: '//cdn.webrtc-experiment.com/Robot-Speaker.js',
-    callback: function (WAV_File) {},
-    amplitude: 100,
-    wordgap: 0,
-    pitch: 50,
-    speed: 175,
-    onSpeakingEnd: function() {},
-    onWorkerFileDownloadStart: function() {},
-    onWorkerFileDownloadEnd: function() {}
-};
-
-translator.speakTextUsingRobot(textToPlay, config);
-```
-
-`speakTextUsingRobot` method accepts two arguments; first one is mandatory and last one is optional:
-
-1. Text to Speak i.e. convert text into voice file (WAV)
-2. Options like worker-file path etc.
-
-Default worker file's path is `https://www.webrtc-experiment.com/Robot-Speaker.js`. It is strongly recommended to download and link it from your own domain.
-
-If you want to play WAV file yourself or you want to POST/store WAV file; then you can use `callback` parameter to override default behaviour:
-
-```javascript
-translator.speakTextUsingRobot(textToPlay, {
-    callback: function (WAV_File) {
-        HTTP_POST_using_FormData( WAV_File );
-    }
-});
-```
-
-`onSpeakingEnd` is useful in text-chat apps; where you can disable text box until text is translated and spoken; then you can enable it again.
-
-# `speakTextUsingGoogleSpeaker`
-
-Use Google Servers (Translation API) to speak the text.
-
-This method uses Google Non-Official Translation API to convert text into mp3 sound. API Key used is taken from someone on the web; and there is no guarantee of its availability; that's why it is strongly suggested to buy your own KEY and pass using `api_key` parameter:
-
-```javascript
-translator.speakTextUsingGoogleSpeaker({
-    textToSpeak: 'text-to-convert',
-    targetLanguage: 'your-language',
-
-    // Google Translation service's API Key
-    api_key: 'Your-Private-API-Key'
-});
-```
-
-Both `textToSpeak` and `targetLanguage` are mandatory. Only `api_key` is optional.
-
-# Use Cases
-
-1. You can use it in any [WebRTC](https://www.webrtc-experiment.com/) application to support globalization!
-2. You can use WebRTC data channels to share transcripted text among users
-3. You can mute original voice; and play translated one. Though, voice and video will NOT be sync
-
-It is really useful in text-chat apps!
-
-# Demo
-
-* https://www.webrtc-experiment.com/Translator/
-
-# Languages Supported
-
-102+ languages are supported. Please check above demo link for the list.
-
-# License
-
-[Translator.js](https://github.com/muaz-khan/Translator) is released under [MIT licence](https://www.webrtc-experiment.com/licence/) . Copyright (c) [Muaz Khan](http://www.MuazKhan.com/).
+New code is MIT licensed — see [LICENSE](LICENSE).
