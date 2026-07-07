@@ -132,10 +132,43 @@
 
   // ---------- Rendering ----------
 
+  // Each feed follows new content until the user scrolls up to read history;
+  // scrolling back near the bottom resumes following. Tracked explicitly (not
+  // recomputed at write time) so rapid updates can't break the follow state.
+  const following = new WeakMap();
+
+  for (const feed of [feedMixed, feedEnglish]) {
+    following.set(feed, true);
+    feed.addEventListener(
+      'scroll',
+      () => {
+        const gap = feed.scrollHeight - feed.scrollTop - feed.clientHeight;
+        following.set(feed, gap < 120);
+      },
+      { passive: true }
+    );
+    // Scroll events are async; wheel/touch fire synchronously. Pausing on the
+    // gesture itself means a translation resolving mid-gesture can't snap the
+    // feed back down while the user is heading up to read history.
+    feed.addEventListener(
+      'wheel',
+      (e) => {
+        if (e.deltaY < 0 && feed.scrollTop > 0) following.set(feed, false);
+      },
+      { passive: true }
+    );
+    feed.addEventListener(
+      'touchmove',
+      () => {
+        const gap = feed.scrollHeight - feed.scrollTop - feed.clientHeight;
+        if (gap >= 120) following.set(feed, false);
+      },
+      { passive: true }
+    );
+  }
+
   function stick(feed) {
-    // Auto-scroll only if the user is already near the bottom.
-    const gap = feed.scrollHeight - feed.scrollTop - feed.clientHeight;
-    if (gap < 120) feed.scrollTop = feed.scrollHeight;
+    if (following.get(feed)) feed.scrollTop = feed.scrollHeight;
   }
 
   function chipClass(lang) {

@@ -155,7 +155,6 @@ main {
   flex: 1;
   overflow-y: auto;
   padding: 14px 16px 18px;
-  scroll-behavior: smooth;
 }
 .feed::-webkit-scrollbar { width: 8px; }
 .feed::-webkit-scrollbar-thumb { background: #223041; border-radius: 4px; }
