@@ -24,6 +24,8 @@
   const feedEnglish = $('#feedEnglish');
   const overlay = $('#overlay');
   const overlayMsg = $('#overlayMsg');
+  const notice = $('#notice');
+  const noticeMsg = $('#noticeMsg');
 
   const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
   const SUPPORTED = Boolean(SpeechRec) && window.isSecureContext;
@@ -49,6 +51,8 @@
     listening: false,
     rec: null,
     restartTimer: null,
+    startWatchdog: null,
+    netErrors: 0,
     lastFinal: { text: '', at: 0 },
   };
 
@@ -354,6 +358,33 @@
     statusText.textContent = msg;
   }
 
+  // Failures get a visible banner — the header status alone is easy to miss.
+  function showNotice(html) {
+    noticeMsg.innerHTML = html;
+    notice.hidden = false;
+  }
+
+  function hideNotice() {
+    notice.hidden = true;
+  }
+
+  function fail(status, html) {
+    stopListening();
+    setStatus('error', status);
+    showNotice(html);
+  }
+
+  const MIC_BLOCKED_HTML =
+    '<strong>Microphone access is blocked.</strong> Click the 🔒 / site-settings icon left of the address bar, ' +
+    'set <em>Microphone</em> to <em>Allow</em>, reload the page, then press Start again. On a Mac, also check ' +
+    'System Settings → Privacy &amp; Security → Microphone and make sure your browser is switched on.';
+  const NO_MIC_HTML =
+    '<strong>No microphone found.</strong> Plug in or enable a microphone, then press Start again.';
+  const SERVICE_HTML =
+    "<strong>This browser's speech recognition service isn't responding.</strong> Some browsers (Brave, Arc, " +
+    'Opera, Vivaldi, Safari) expose the API but do not actually run it. Open this page in ' +
+    '<strong>Google Chrome</strong> or <strong>Microsoft Edge</strong>.';
+
   // ---------- Recognition ----------
 
   function buildRecognizer() {
@@ -363,9 +394,14 @@
     rec.interimResults = true;
     rec.maxAlternatives = 1;
 
-    rec.onstart = () => setStatus('on', 'Listening…');
+    rec.onstart = () => {
+      clearTimeout(state.startWatchdog);
+      hideNotice();
+      setStatus('on', 'Listening…');
+    };
 
     rec.onresult = (ev) => {
+      state.netErrors = 0;
       let interim = '';
       for (let i = ev.resultIndex; i < ev.results.length; i++) {
         const result = ev.results[i];
@@ -381,16 +417,19 @@
     rec.onerror = (ev) => {
       switch (ev.error) {
         case 'not-allowed':
+          fail('Mic blocked', MIC_BLOCKED_HTML);
+          break;
         case 'service-not-allowed':
-          stopListening();
-          setStatus('error', 'Mic blocked — allow microphone access');
+        case 'language-not-supported':
+          fail('Speech service unavailable', SERVICE_HTML);
           break;
         case 'audio-capture':
-          stopListening();
-          setStatus('error', 'No microphone found');
+          fail('No microphone found', NO_MIC_HTML);
           break;
         case 'network':
-          setStatus('warn', 'Speech service hiccup — retrying…');
+          // One blip is normal; a run of them means the service isn't there.
+          if (++state.netErrors >= 3) fail('Speech service unavailable', SERVICE_HTML);
+          else setStatus('warn', 'Speech service hiccup — retrying…');
           break;
         default:
           // 'no-speech' / 'aborted' are routine; onend handles the restart.
@@ -419,22 +458,59 @@
     return rec;
   }
 
-  function startListening() {
-    if (!SUPPORTED || state.listening) return;
+  async function startListening() {
+    if (state.listening) return;
+    if (!SUPPORTED) {
+      overlay.hidden = false;
+      return;
+    }
     state.listening = true;
-    state.rec = buildRecognizer();
-    try {
-      state.rec.start();
-    } catch (e) { /* onend will retry */ }
+    state.netErrors = 0;
+    hideNotice();
     micBtn.textContent = '■ Stop';
     micBtn.classList.add('on');
     setStatus('warn', 'Starting mic…');
+
+    // Ask for the mic up front: this brings up the browser's permission prompt
+    // reliably and tells us exactly why it failed if it does.
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach((t) => t.stop());
+      } catch (err) {
+        if (!state.listening) return;
+        if (err.name === 'NotFoundError' || err.name === 'OverconstrainedError') {
+          fail('No microphone found', NO_MIC_HTML);
+        } else {
+          fail('Mic blocked', MIC_BLOCKED_HTML);
+        }
+        return;
+      }
+      if (!state.listening) return; // stopped while the prompt was open
+    }
+
+    state.rec = buildRecognizer();
+    try {
+      state.rec.start();
+    } catch (e) {
+      fail('Could not start', SERVICE_HTML);
+      return;
+    }
+
+    // If recognition never actually starts, say so instead of hanging.
+    clearTimeout(state.startWatchdog);
+    state.startWatchdog = setTimeout(() => {
+      if (state.listening && statusText.textContent === 'Starting mic…') {
+        fail('Speech service unavailable', SERVICE_HTML);
+      }
+    }, 8000);
     requestWakeLock();
   }
 
   function stopListening() {
     state.listening = false;
     clearTimeout(state.restartTimer);
+    clearTimeout(state.startWatchdog);
     if (state.rec) {
       state.rec.onend = null;
       try { state.rec.stop(); } catch (e) { /* already stopped */ }
@@ -472,6 +548,8 @@
     if (state.listening) stopListening();
     else startListening();
   });
+
+  $('#noticeClose').addEventListener('click', hideNotice);
 
   clearBtn.addEventListener('click', () => {
     entriesMixed.innerHTML = '';
