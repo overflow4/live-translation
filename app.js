@@ -53,6 +53,9 @@
     restartTimer: null,
     startWatchdog: null,
     netErrors: 0,
+    // Google's cloud speech service only answers official Chrome/Edge builds on
+    // an open network. When it fails, switch to the browser's on-device model.
+    local: false,
     lastFinal: { text: '', at: 0 },
   };
 
@@ -378,12 +381,70 @@
     '<strong>Microphone access is blocked.</strong> Click the 🔒 / site-settings icon left of the address bar, ' +
     'set <em>Microphone</em> to <em>Allow</em>, reload the page, then press Start again. On a Mac, also check ' +
     'System Settings → Privacy &amp; Security → Microphone and make sure your browser is switched on.';
+  const MIC_PROMPT_HTML =
+    '<strong>Waiting for microphone permission.</strong> Look for the prompt near the address bar ' +
+    '(or a 🎙️ / blocked icon at its right end) and choose <em>Allow</em>. Nothing happening? On a Mac, ' +
+    'check System Settings → Privacy &amp; Security → Microphone and make sure your browser is switched on.';
   const NO_MIC_HTML =
     '<strong>No microphone found.</strong> Plug in or enable a microphone, then press Start again.';
   const SERVICE_HTML =
     "<strong>This browser's speech recognition service isn't responding.</strong> Some browsers (Brave, Arc, " +
     'Opera, Vivaldi, Safari) expose the API but do not actually run it. Open this page in ' +
-    '<strong>Google Chrome</strong> or <strong>Microsoft Edge</strong>.';
+    '<strong>Google Chrome</strong> or <strong>Microsoft Edge</strong>, and turn off any VPN or blocker ' +
+    'that might block Google\'s speech servers.';
+  const serviceHtml = (code) => SERVICE_HTML + ' <small>(error: ' + code + (state.local ? ', on-device' : '') + ')</small>';
+  const LOCAL_INSTALL_HTML =
+    "<strong>Google's online speech service isn't reachable from this browser.</strong> " +
+    'Press <em>Start listening</em> again to download the offline speech model (one time, then it runs on this device).';
+
+  // ---------- On-device fallback ----------
+
+  const canGoLocal = () => typeof SpeechRec.available === 'function';
+
+  // Make sure the on-device model for the current language is installed.
+  // install() may need a fresh click, so this is also called from the Start handler.
+  async function ensureLocalModel() {
+    const opts = { langs: [langSelect.value], processLocally: true };
+    let avail = await SpeechRec.available(opts);
+    if (avail === 'available') return true;
+    if (avail === 'unavailable') return false;
+    setStatus('warn', 'Downloading offline speech model…');
+    try {
+      if (await SpeechRec.install(opts)) return true;
+    } catch (e) { /* needs a user gesture — handled by caller */ }
+    avail = await SpeechRec.available(opts);
+    return avail === 'available';
+  }
+
+  async function switchToLocal() {
+    state.local = true;
+    state.netErrors = 0;
+    const lang = langSelect.value;
+    clearTimeout(state.startWatchdog);
+    if (state.rec) {
+      state.rec.onend = null;
+      try { state.rec.abort(); } catch (e) { /* already stopped */ }
+      state.rec = null;
+    }
+    setStatus('warn', 'Switching to on-device speech…');
+    let ok = false;
+    try { ok = await ensureLocalModel(); } catch (e) { ok = false; }
+    if (!state.listening || langSelect.value !== lang) return;
+    if (!ok) {
+      const avail = await SpeechRec.available({ langs: [lang], processLocally: true }).catch(() => 'unavailable');
+      if (avail === 'unavailable') {
+        state.local = false;
+        fail('Speech service unavailable', serviceHtml('network'));
+      } else {
+        stopListening();
+        setStatus('warn', 'Offline model needed');
+        showNotice(LOCAL_INSTALL_HTML);
+      }
+      return;
+    }
+    state.rec = buildRecognizer();
+    try { state.rec.start(); } catch (e) { fail('Could not start', serviceHtml('start')); }
+  }
 
   // ---------- Recognition ----------
 
@@ -393,6 +454,7 @@
     rec.continuous = true;
     rec.interimResults = true;
     rec.maxAlternatives = 1;
+    if (state.local) rec.processLocally = true;
 
     rec.onstart = () => {
       clearTimeout(state.startWatchdog);
@@ -421,15 +483,22 @@
           break;
         case 'service-not-allowed':
         case 'language-not-supported':
-          fail('Speech service unavailable', SERVICE_HTML);
+          if (!state.local && canGoLocal()) switchToLocal();
+          else fail('Speech service unavailable', serviceHtml(ev.error));
           break;
         case 'audio-capture':
           fail('No microphone found', NO_MIC_HTML);
           break;
         case 'network':
-          // One blip is normal; a run of them means the service isn't there.
-          if (++state.netErrors >= 3) fail('Speech service unavailable', SERVICE_HTML);
-          else setStatus('warn', 'Speech service hiccup — retrying…');
+          // Cloud service unreachable (Chromium-based browser, VPN, firewall,
+          // blocker…): fall back to on-device recognition if the browser has it.
+          if (!state.local && canGoLocal()) {
+            switchToLocal();
+          } else if (++state.netErrors >= 3) {
+            fail('Speech service unavailable', serviceHtml(ev.error));
+          } else {
+            setStatus('warn', 'Speech service hiccup — retrying…');
+          }
           break;
         default:
           // 'no-speech' / 'aborted' are routine; onend handles the restart.
@@ -471,13 +540,37 @@
     micBtn.classList.add('on');
     setStatus('warn', 'Starting mic…');
 
+    // Offline model download needs a fresh click, so do it before anything else.
+    if (state.local) {
+      let ok = false;
+      try { ok = await ensureLocalModel(); } catch (e) { ok = false; }
+      if (!state.listening) return;
+      if (!ok) {
+        fail('Offline model unavailable', serviceHtml('install'));
+        return;
+      }
+      setStatus('warn', 'Starting mic…');
+    }
+
     // Ask for the mic up front: this brings up the browser's permission prompt
     // reliably and tells us exactly why it failed if it does.
     if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      // getUserMedia never settles while the permission prompt is open — and
+      // that prompt is easy to miss (or hidden by quiet-permission UI). Point
+      // the user at it instead of sitting on "Starting mic…" forever.
+      const promptHint = setTimeout(() => {
+        if (!state.listening) return;
+        setStatus('warn', 'Waiting for mic permission…');
+        showNotice(MIC_PROMPT_HTML);
+      }, 2500);
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         stream.getTracks().forEach((t) => t.stop());
+        clearTimeout(promptHint);
+        hideNotice();
+        if (state.listening) setStatus('warn', 'Starting mic…');
       } catch (err) {
+        clearTimeout(promptHint);
         if (!state.listening) return;
         if (err.name === 'NotFoundError' || err.name === 'OverconstrainedError') {
           fail('No microphone found', NO_MIC_HTML);
@@ -493,7 +586,7 @@
     try {
       state.rec.start();
     } catch (e) {
-      fail('Could not start', SERVICE_HTML);
+      fail('Could not start', serviceHtml('start'));
       return;
     }
 
@@ -501,7 +594,7 @@
     clearTimeout(state.startWatchdog);
     state.startWatchdog = setTimeout(() => {
       if (state.listening && statusText.textContent === 'Starting mic…') {
-        fail('Speech service unavailable', SERVICE_HTML);
+        fail('Speech service unavailable', serviceHtml('timeout'));
       }
     }, 8000);
     requestWakeLock();
@@ -517,6 +610,7 @@
       state.rec = null;
     }
     clearLive();
+    hideNotice(); // fail() re-shows its own notice right after this
     micBtn.textContent = '▶ Start listening';
     micBtn.classList.remove('on');
     setStatus('off', 'Mic off');
